@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="be">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Мінімальны галасавы асістэнт</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at top, rgba(0, 120, 255, 0.12), transparent),
+          radial-gradient(circle at bottom, rgba(0, 120, 255, 0.08), transparent);
+      }
+      main {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+      h1 {
+        font-size: clamp(28px, 4vw, 40px);
+        margin-bottom: 0;
+      }
+      .card {
+        background: rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(8px);
+        border-radius: 20px;
+        padding: 20px;
+        box-shadow: 0 10px 40px rgba(15, 23, 42, 0.15);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+      .controls label {
+        font-size: 14px;
+        opacity: 0.8;
+      }
+      .controls input {
+        width: 100%;
+        margin-top: 4px;
+        padding: 8px 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(15, 23, 42, 0.4);
+        color: inherit;
+      }
+      button {
+        border: none;
+        border-radius: 40px;
+        padding: 16px 32px;
+        font-size: 18px;
+        font-weight: 600;
+        color: white;
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        background: linear-gradient(120deg, #2563eb, #7c3aed);
+        box-shadow: 0 15px 35px rgba(37, 99, 235, 0.35);
+      }
+      button:active {
+        transform: scale(0.98);
+        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.6);
+      }
+      button[disabled] {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      .status {
+        font-size: 15px;
+        opacity: 0.85;
+      }
+      .conversation {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+      }
+      .bubble {
+        padding: 16px;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        min-height: 120px;
+        background: rgba(15, 23, 42, 0.45);
+      }
+      .bubble h3 {
+        margin-top: 0;
+        margin-bottom: 12px;
+        font-size: 16px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        opacity: 0.7;
+      }
+      pre {
+        white-space: pre-wrap;
+        font-size: 13px;
+        margin: 0;
+      }
+      .log-panel {
+        font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Мінімальны галасавы асістэнт</h1>
+        <p>Утрымлівай кнопку, каб запісаць запыт. Адпускаеш — ідзе апрацоўка, адказ агучваецца амаль адразу.</p>
+      </header>
+
+      <section class="card controls">
+        <label>
+          Пачатковы буфер (с)
+          <input id="initialBuffer" type="number" step="0.05" min="0.1" max="1.5" value="0.4" />
+        </label>
+        <label>
+          Наступны буфер (с)
+          <input id="subsequentBuffer" type="number" step="0.01" min="0.05" max="0.5" value="0.15" />
+        </label>
+      </section>
+
+      <section class="card">
+        <button id="holdButton">Націсні і ўтрымлівай, каб гаварыць</button>
+        <p class="status" id="status">Гатовы да запісу.</p>
+      </section>
+
+      <section class="card conversation">
+        <div class="bubble">
+          <h3>Вы</h3>
+          <p id="userTranscript">—</p>
+        </div>
+        <div class="bubble">
+          <h3>Асістэнт</h3>
+          <p id="assistantReply">—</p>
+        </div>
+      </section>
+
+      <section class="card log-panel">
+        <h3>Лагі стрыму</h3>
+        <pre id="streamLog">[лаг пусты]</pre>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const statusEl = document.getElementById("status");
+        const transcriptEl = document.getElementById("userTranscript");
+        const replyEl = document.getElementById("assistantReply");
+        const holdBtn = document.getElementById("holdButton");
+        const initialInput = document.getElementById("initialBuffer");
+        const subsequentInput = document.getElementById("subsequentBuffer");
+        const logEl = document.getElementById("streamLog");
+
+        let config = null;
+        let mediaStream = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let isRecording = false;
+        let ws = null;
+        let player = null;
+        let sessionId = crypto.randomUUID();
+
+        function setStatus(text) {
+          statusEl.textContent = text;
+        }
+
+        function resetConversation() {
+          transcriptEl.textContent = "—";
+          replyEl.textContent = "—";
+        }
+
+        function resetLog() {
+          logEl.textContent = "[лаг пусты]";
+        }
+
+        async function ensureConfig() {
+          if (config) return config;
+          const response = await fetch("/api/config");
+          if (!response.ok) {
+            throw new Error("Не атрымалася атрымаць канфігурацыю");
+          }
+          config = await response.json();
+          initialInput.value = Number(config.default_initial_buffer_s).toFixed(2);
+          subsequentInput.value = Number(config.default_subsequent_buffer_s).toFixed(2);
+          return config;
+        }
+
+        function destroyPlayer() {
+          if (player) {
+            player.destroy();
+            player = null;
+          }
+        }
+
+        function closeWs() {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.close(1000, "superseded");
+          }
+          ws = null;
+        }
+
+        function stopPlayback() {
+          closeWs();
+          destroyPlayer();
+        }
+
+        function createStreamer(sampleRate) {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) {
+            throw new Error("AudioContext не падтрымліваецца ў гэтым браўзеры");
+          }
+          const ctx = new AC({ sampleRate });
+          const node = ctx.createScriptProcessor(4096, 1, 1);
+          const queue = [];
+          let playing = false;
+          let ended = false;
+          const meta = {
+            tClick: performance.now(),
+            firstChunkTs: null,
+            firstAudioTs: null,
+            chunkDurations: [],
+            server: {},
+          };
+
+          function fmt(x) {
+            if (x === null || x === undefined) return "n/a";
+            return `${x.toFixed(3)} s`;
+          }
+
+          function renderLog() {
+            const s = meta.server || {};
+            const lines = [];
+            lines.push("Клік (Hold→release): 0.000 s");
+            if (meta.firstChunkTs !== null) {
+              lines.push(`Першы чанк прыйшоў:   ${fmt((meta.firstChunkTs - meta.tClick) / 1000)}`);
+              if (meta.firstAudioTs !== null) {
+                lines.push(`Пачатак прайгравання: ${fmt((meta.firstAudioTs - meta.tClick) / 1000)}`);
+                lines.push(`Затрымка (чанк→аўдыя): ${fmt((meta.firstAudioTs - meta.firstChunkTs) / 1000)}`);
+              }
+            }
+            lines.push("\n— Налады стрыму —");
+            lines.push(`Пачатковы буфер:      ${fmt(Number(s.initial_buffer_s || initialInput.value))}`);
+            lines.push(`Наступны буфер:       ${fmt(Number(s.subsequent_buffer_s || subsequentInput.value))}`);
+            if (meta.chunkDurations.length > 0) {
+              lines.push(`Працягласць 1-га чанка: ${meta.chunkDurations[0]} s`);
+              lines.push(`Атрымана чанкаў:        ${meta.chunkDurations.length}`);
+            }
+            lines.push("\n— Серверныя метрыкі —");
+            lines.push(`Латэнты (голас):      ${fmt(Number(s.latents_s))}`);
+            lines.push(`Падзел тэксту:        ${fmt(Number(s.text_split_s))}`);
+            lines.push(`Ініт→1-ы чанк:        ${fmt(Number(s.gen_init_to_first_chunk_s))}`);
+            lines.push(`Усё да 1-га чанка:    ${fmt(Number(s.until_first_chunk_total_s))}`);
+            if (meta.firstChunkTs !== null && s.until_first_chunk_total_s) {
+              const estimate = (meta.firstChunkTs - meta.tClick) / 1000 - Number(s.until_first_chunk_total_s);
+              lines.push("\nАцэнка лагу кліента: " + fmt(Math.max(0, estimate)));
+            }
+            lines.push("\nСтатус стрыму: " + (playing ? "playing" : ended ? "stopped" : "idle"));
+            logEl.textContent = lines.join("\n");
+          }
+
+          node.onaudioprocess = (event) => {
+            const out = event.outputBuffer.getChannelData(0);
+            let i = 0;
+            while (i < out.length) {
+              if (!queue.length || !playing) {
+                out[i++] = 0;
+                continue;
+              }
+              const chunk = queue[0];
+              const remaining = Math.min(chunk.length, out.length - i);
+              out.set(chunk.subarray(0, remaining), i);
+              i += remaining;
+              if (remaining === chunk.length) {
+                queue.shift();
+              } else {
+                queue[0] = chunk.subarray(remaining);
+              }
+              if (meta.firstAudioTs === null) {
+                meta.firstAudioTs = performance.now();
+                renderLog();
+              }
+            }
+            if (ended && queue.length === 0 && playing) {
+              playing = false;
+              renderLog();
+            }
+          };
+
+          node.connect(ctx.destination);
+          renderLog();
+
+          return {
+            pushChunk(b64) {
+              if (!b64 || b64 === "__STOP__") {
+                ended = true;
+                renderLog();
+                return;
+              }
+              const bin = atob(b64);
+              const buf = new ArrayBuffer(bin.length);
+              const view = new Uint8Array(buf);
+              for (let i = 0; i < bin.length; i += 1) {
+                view[i] = bin.charCodeAt(i);
+              }
+              const floats = new Float32Array(buf);
+              if (meta.firstChunkTs === null) {
+                meta.firstChunkTs = performance.now();
+              }
+              meta.chunkDurations.push((floats.length / ctx.sampleRate).toFixed(3));
+              queue.push(floats);
+              if (!playing) {
+                playing = true;
+                if (ctx.state === "suspended") ctx.resume();
+              }
+              renderLog();
+            },
+            markStopped() {
+              ended = true;
+              playing = false;
+              queue.length = 0;
+              renderLog();
+            },
+            updateServerMetrics(data) {
+              meta.server = data;
+              renderLog();
+            },
+            destroy() {
+              ended = true;
+              queue.length = 0;
+              playing = false;
+              node.disconnect();
+              ctx.close();
+            },
+          };
+        }
+
+        function getBuffersFromUI() {
+          const initVal = Number(initialInput.value) || 0.4;
+          const subVal = Number(subsequentInput.value) || 0.15;
+          return { initial: initVal, subsequent: subVal };
+        }
+
+        async function ensureRecorder() {
+          if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            return;
+          }
+          if (!mediaStream) {
+            mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          }
+          mediaRecorder = new MediaRecorder(mediaStream);
+          mediaRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+          };
+          mediaRecorder.onstop = () => {
+            if (recordedChunks.length === 0) {
+              setStatus("Пуста, паспрабуй яшчэ раз");
+              return;
+            }
+            const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+            recordedChunks = [];
+            void sendAudio(blob);
+          };
+        }
+
+        async function startRecording() {
+          await ensureConfig();
+          await ensureRecorder();
+          stopPlayback();
+          recordedChunks = [];
+          mediaRecorder.start();
+          isRecording = true;
+          holdBtn.textContent = "Запіс ідзе…";
+          setStatus("Запіс ідзе. Адпусці кнопку, калі скончыш.");
+        }
+
+        function stopRecording() {
+          if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+          mediaRecorder.stop();
+          isRecording = false;
+          holdBtn.textContent = "Націсні і ўтрымлівай, каб гаварыць";
+          setStatus("Апрацоўка запыту…");
+        }
+
+        async function sendAudio(blob) {
+          try {
+            const fd = new FormData();
+            fd.append("audio", blob, "speech.webm");
+            const asrResponse = await fetch("/api/asr", {
+              method: "POST",
+              body: fd,
+            });
+            if (!asrResponse.ok) {
+              throw new Error(await asrResponse.text());
+            }
+            const asrData = await asrResponse.json();
+            const transcript = (asrData.transcript || "").trim();
+            transcriptEl.textContent = transcript || "(пуста)";
+            if (!transcript) {
+              setStatus("Не атрымалася распазнаць гаворку. Паспрабуй яшчэ раз.");
+              return;
+            }
+            setStatus("Чакаю адказ ад LLM…");
+
+            const llmResponse = await fetch("/api/llm", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ transcript }),
+            });
+            if (!llmResponse.ok) {
+              throw new Error(await llmResponse.text());
+            }
+            const llmData = await llmResponse.json();
+            replyEl.textContent = llmData.reply;
+            setStatus("Стартуе TTS…");
+            await startTts(llmData.reply);
+          } catch (err) {
+            console.error(err);
+            setStatus(`Памылка: ${err.message || err}`);
+          }
+        }
+
+        async function startTts(text) {
+          const conf = await ensureConfig();
+          if (ws) {
+            closeWs();
+          }
+          if (player) {
+            destroyPlayer();
+          }
+          resetLog();
+          player = createStreamer(conf.sample_rate);
+          const { initial, subsequent } = getBuffersFromUI();
+          const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+          const wsUrl = `${protocol}://${window.location.host}/ws/tts`;
+          ws = new WebSocket(wsUrl);
+          ws.onopen = () => {
+            const payload = {
+              text,
+              speaker_audio: null,
+              initial_buffer_s: initial,
+              subsequent_buffer_s: subsequent,
+              session_id: sessionId,
+            };
+            ws.send(JSON.stringify(payload));
+            setStatus("Стрымінг гучання…");
+          };
+          ws.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+              if (msg.type === "chunk") {
+                player.pushChunk(msg.data);
+              } else if (msg.type === "metrics" && msg.data) {
+                player.updateServerMetrics(msg.data);
+              } else if (msg.type === "stop") {
+                player.markStopped();
+                setStatus("Адказ прайграны. Можаш запісваць наступны.");
+              } else if (msg.type === "error") {
+                setStatus(`Памылка TTS: ${msg.message}`);
+              }
+            } catch (err) {
+              console.error(err);
+            }
+          };
+          ws.onclose = () => {
+            if (player) {
+              player.markStopped();
+            }
+          };
+        }
+
+        holdBtn.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          if (isRecording) return;
+          resetConversation();
+          resetLog();
+          void startRecording();
+        });
+
+        const stopEvents = ["pointerup", "pointerleave", "touchend", "touchcancel", "mouseup", "mouseleave"];
+        stopEvents.forEach((eventName) => {
+          holdBtn.addEventListener(eventName, (event) => {
+            if (!isRecording) return;
+            event.preventDefault();
+            stopRecording();
+          });
+        });
+
+        setStatus("Гатовы да запісу.");
+        void ensureConfig().catch((err) => {
+          console.error(err);
+          setStatus("Не атрымалася загрузіць канфігурацыю: " + err.message);
+        });
+      })();
+    </script>
+  </body>
+</html>
